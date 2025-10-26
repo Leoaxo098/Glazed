@@ -37,7 +37,7 @@ public class ShieldBreaker extends Module {
         .name("weapon-slot")
         .description("The hotbar slot to switch back to after breaking shield (1-9)")
         .defaultValue(1)
-        .range(1, 9)
+        .range(0, 9)
         .sliderRange(1, 9)
         .visible(() -> !returnToPrevSlot.get())
         .build()
@@ -46,8 +46,8 @@ public class ShieldBreaker extends Module {
     private final Setting<Integer> attackDelay = sgGeneral.add(new IntSetting.Builder()
         .name("attack-delay")
         .description("Delay in ticks between shield break and weapon switch")
-        .defaultValue(10)
-        .range(1, 40)
+        .defaultValue(0)
+        .range(0, 40)
         .sliderRange(1, 20)
         .build()
     );
@@ -55,8 +55,8 @@ public class ShieldBreaker extends Module {
     private final Setting<Integer> killDelay = sgGeneral.add(new IntSetting.Builder()
         .name("kill-delay")  
         .description("Delay in ticks between weapon switch and kill attack")
-        .defaultValue(8)
-        .range(1, 40)
+        .defaultValue(1)
+        .range(0, 40)
         .sliderRange(1, 20)
         .build()
     );
@@ -64,8 +64,8 @@ public class ShieldBreaker extends Module {
     private final Setting<Integer> axeSwitchDelay = sgGeneral.add(new IntSetting.Builder()
         .name("axe-switch-delay")
         .description("Delay in ticks to ensure axe switch is completed")
-        .defaultValue(2)
-        .range(1, 20)
+        .defaultValue(0)
+        .range(0, 20)
         .sliderRange(1, 10)
         .build()
     );
@@ -73,17 +73,26 @@ public class ShieldBreaker extends Module {
     private final Setting<Integer> manualShieldBreakDelay = sgGeneral.add(new IntSetting.Builder()
         .name("manual-shield-break-delay")
         .description("Delay in ticks before switching back in manual mode")
-        .defaultValue(2)
-        .range(1, 20)
+        .defaultValue(1)
+        .range(0, 20)
         .sliderRange(1, 10)
         .build()
     );
 
+        private final Setting<Integer> cycleCooldown = sgGeneral.add(new IntSetting.Builder()
+            .name("cycle-cooldown")
+            .description("Delay in ticks before starting the next shield break cycle.")
+            .defaultValue(4)
+            .range(0, 20)
+            .sliderRange(0, 10)
+            .build()
+        );
+
     private final Setting<Integer> weaponSwitchDelay = sgGeneral.add(new IntSetting.Builder()
         .name("weapon-switch-delay")
         .description("Delay in ticks to ensure weapon switch is completed")
-        .defaultValue(3)
-        .range(1, 20)
+        .defaultValue(0)
+        .range(0, 20)
         .sliderRange(1, 10)
         .build()
     );
@@ -98,8 +107,8 @@ public class ShieldBreaker extends Module {
     private final Setting<Double> range = sgGeneral.add(new DoubleSetting.Builder()
         .name("range")
         .description("Maximum range to detect shield usage")
-        .defaultValue(4.5)
-        .range(1.0, 6.0)
+        .defaultValue(6.0)
+        .range(0.0, 10.0)
         .sliderRange(1.0, 6.0)
         .build()
     );
@@ -111,11 +120,22 @@ public class ShieldBreaker extends Module {
         .build()
     );
 
+    private final Setting<Boolean> killSwitch = sgGeneral.add(new BoolSetting.Builder()
+        .name("kill-switch")
+        .description("Enable auto attack after breaking shield")
+        .defaultValue(true)
+        .build()
+    );
+
     // State variables
     private PlayerEntity targetPlayer = null;
     private int originalSlot = -1;
     private int tickCounter = 0;
     private ShieldBreakerState state = ShieldBreakerState.IDLE;
+    private boolean shieldBroken = false;
+    private long lastBreakAttempt = 0;
+
+        private int cooldownTicks = 0;
     
     private enum ShieldBreakerState {
         IDLE,           // Waiting for shield detection
@@ -145,6 +165,11 @@ public class ShieldBreaker extends Module {
         if (mc.player == null || mc.world == null) return;
 
         if (autoBreak.get()) {
+                // Wait for cooldown before restarting cycle
+                if (cooldownTicks > 0) {
+                    cooldownTicks--;
+                    return;
+                }
             switch (state) {
                 case IDLE -> checkForShieldUser();
                 case SWITCHING_AXE -> handleAxeSwitch();
@@ -232,11 +257,20 @@ public class ShieldBreaker extends Module {
         
         // Small delay to ensure switch completed
         if (tickCounter >= axeSwitchDelay.get()) {
-            // Attack to break shield
-            mc.interactionManager.attackEntity(mc.player, targetPlayer);
-            mc.player.swingHand(Hand.MAIN_HAND);
-            
-            if (chatInfo.get()) info("Shield broken! Switching to weapon...");
+            // Only attempt break if we haven't already broken the shield
+            if (!shieldBroken) {
+                // Add cooldown check to prevent double breaks
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastBreakAttempt > 250) { // 250ms cooldown
+                    // Attack to break shield
+                    mc.interactionManager.attackEntity(mc.player, targetPlayer);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                    lastBreakAttempt = currentTime;
+                    shieldBroken = true;
+                    
+                    if (chatInfo.get()) info("Shield broken! Switching to weapon...");
+                }
+            }
             
             state = ShieldBreakerState.BREAKING;
             tickCounter = 0;
@@ -246,11 +280,8 @@ public class ShieldBreaker extends Module {
     private void handleShieldBreak() {
         tickCounter++;
         
-        // For manual mode, use a shorter delay
-        int delay = autoBreak.get() ? attackDelay.get() : manualShieldBreakDelay.get();
-        
-        // Wait for delay before switching back
-        if (tickCounter >= delay) {
+        // Immediately proceed if shield is broken
+        if (shieldBroken) {
             // Always return to original slot in manual mode
             if (!autoBreak.get()) {
                 if (originalSlot != -1) {
@@ -267,7 +298,7 @@ public class ShieldBreaker extends Module {
                     return;
                 }
             } else {
-                // Auto mode behavior
+                // Auto mode behavior - switch immediately after break
                 if (returnToPrevSlot.get()) {
                     if (originalSlot != -1) {
                         InvUtils.swap(originalSlot, false);
@@ -277,8 +308,15 @@ public class ShieldBreaker extends Module {
                     InvUtils.swap(weaponSlotIndex, false);
                 }
                 state = ShieldBreakerState.SWITCHING_BACK;
+                tickCounter = 0;
             }
-            tickCounter = 0;
+        } else {
+            // If shield isn't broken yet, wait a bit then reset if taking too long
+            if (tickCounter >= 5) { // Short timeout
+                if (chatInfo.get()) error("Shield break failed, retrying...");
+                state = ShieldBreakerState.IDLE;
+                tickCounter = 0;
+            }
         }
     }
 
@@ -297,18 +335,24 @@ public class ShieldBreaker extends Module {
         
         // Wait for kill delay then attack
         if (tickCounter >= killDelay.get()) {
-            // Verify target is still valid and in range
-            if (targetPlayer != null && !targetPlayer.isRemoved() && 
-                mc.player.distanceTo(targetPlayer) <= range.get()) {
-                
-                mc.interactionManager.attackEntity(mc.player, targetPlayer);
-                mc.player.swingHand(Hand.MAIN_HAND);
-                
-                if (chatInfo.get()) info("Kill attack executed!");
+            // Only execute kill attack if kill switch is enabled
+            if (killSwitch.get()) {
+                // Verify target is still valid and in range
+                if (targetPlayer != null && !targetPlayer.isRemoved() && 
+                    mc.player.distanceTo(targetPlayer) <= range.get()) {
+                    
+                    mc.interactionManager.attackEntity(mc.player, targetPlayer);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                    
+                    if (chatInfo.get()) info("Kill attack executed!");
+                }
+            } else if (chatInfo.get()) {
+                info("Shield broken - Kill switch disabled");
             }
             
             // Reset to idle state
             resetState();
+            cooldownTicks = cycleCooldown.get();
         }
     }
 
@@ -333,6 +377,9 @@ public class ShieldBreaker extends Module {
         originalSlot = -1;
         tickCounter = 0;
         state = ShieldBreakerState.IDLE;
+        shieldBroken = false;
+        lastBreakAttempt = 0;
+            // cooldownTicks is set in handleKillAttack
     }
 
     @Override
