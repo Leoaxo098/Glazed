@@ -213,7 +213,7 @@ public class ShieldBreaker extends Module {
                 if (!autoBreak.get() && isAttacking) {
                     // Manual mode - Store current slot FIRST before any swaps
                     // PlayerInventory no longer exposes getSelectedSlot(); use the selectedSlot field instead
-                    originalSlot = com.nnpg.glazed.utils.InventoryUtils.getSelectedSlot(mc.player.getInventory());
+                    originalSlot = com.nnpg.glazed.VersionUtil.getSelectedSlot(mc.player);
 
                     // Find axe in hotbar
                     FindItemResult axeResult = InvUtils.findInHotbar(itemStack -> itemStack.getItem() instanceof AxeItem);

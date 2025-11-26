@@ -49,16 +49,12 @@ public class VersionUtil {
 
     public static String getGameProfileName(GameProfile profile) {
         try {
-            return profile.getName();
+            // Try reflection first to get the name field
+            java.lang.reflect.Field nameField = GameProfile.class.getDeclaredField("name");
+            nameField.setAccessible(true);
+            return (String) nameField.get(profile);
         } catch (Exception e) {
-            // Fallback: try to access the name field directly
-            try {
-                java.lang.reflect.Field nameField = GameProfile.class.getDeclaredField("name");
-                nameField.setAccessible(true);
-                return (String) nameField.get(profile);
-            } catch (Exception ex) {
-                return "Unknown";
-            }
+            return "Unknown";
         }
     }
 }

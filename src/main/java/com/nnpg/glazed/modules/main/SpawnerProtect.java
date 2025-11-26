@@ -445,7 +445,7 @@ public class SpawnerProtect extends Module {
             playerPos.add(spawnerRange.get(), spawnerRange.get(), spawnerRange.get()))) {
 
             if (mc.world.getBlockState(pos).getBlock() == Blocks.SPAWNER) {
-                double distance = pos.getSquaredDistance(mc.player.getPos());
+                double distance = pos.getSquaredDistance(mc.player.getX(), mc.player.getY(), mc.player.getZ());
                 if (distance < nearestDistance) {
                     nearestDistance = distance;
                     nearestSpawner = pos.toImmutable();
@@ -532,7 +532,7 @@ public class SpawnerProtect extends Module {
             playerPos.add(16, 8, 16))) {
 
             if (mc.world.getBlockState(pos).getBlock() == Blocks.ENDER_CHEST) {
-                double distance = pos.getSquaredDistance(mc.player.getPos());
+                double distance = pos.getSquaredDistance(mc.player.getX(), mc.player.getY(), mc.player.getZ());
                 if (distance < nearestDistance) {
                     nearestDistance = distance;
                     nearestChest = pos.toImmutable();

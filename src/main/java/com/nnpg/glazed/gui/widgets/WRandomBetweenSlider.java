@@ -139,7 +139,6 @@ public class WRandomBetweenSlider extends WWidget implements MeteorWidget {
         }
     }
 
-    @Override
     public boolean onMouseReleased(double mouseX, double mouseY, int button) {
         if (draggingMin || draggingMax) {
             if ((valueMin != valueMinAtDragStart || valueMax != valueMaxAtDragStart) && actionOnRelease != null) {

@@ -3,4 +3,3 @@ build/
 run/
 .vscode/
 .idea/
-*.jar
