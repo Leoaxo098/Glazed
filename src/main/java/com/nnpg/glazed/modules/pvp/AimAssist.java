@@ -26,6 +26,7 @@ public class AimAssist extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgSpeed = settings.createGroup("Aim Speed");
     private final SettingGroup sgBypass = settings.createGroup("Grim Bypass");
+    private final SettingGroup sgMisc = settings.createGroup("Misc");
 
     // General Settings
     private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
@@ -117,8 +118,16 @@ public class AimAssist extends Module {
         .description("Maximum rotation change per tick to bypass Grim AC v3.")
         .defaultValue(2.5)
         .min(0.5)
-        .max(10.0)
-        .sliderRange(0.5, 10.0)
+        .max(180.0)
+        .sliderRange(0.5, 180.0)
+        .build()
+    );
+
+    // Misc Settings
+    private final Setting<Boolean> chatNotifications = sgMisc.add(new BoolSetting.Builder()
+        .name("chat-notifications")
+        .description("Send chat messages when toggling the module.")
+        .defaultValue(false)
         .build()
     );
 
@@ -132,18 +141,24 @@ public class AimAssist extends Module {
     @Override
     public void onActivate() {
         if (mc.player == null || mc.world == null) {
-            ChatUtils.error("Cannot activate AimAssist: Player or world is null!");
+            if (chatNotifications.get()) {
+                ChatUtils.error("Cannot activate AimAssist: Player or world is null!");
+            }
             toggle();
             return;
         }
         target = null;
-        ChatUtils.info("AimAssist activated. Targeting range: " + range.get() + " blocks.");
+        if (chatNotifications.get()) {
+            ChatUtils.info("AimAssist activated. Targeting range: " + range.get() + " blocks.");
+        }
     }
 
     @Override
     public void onDeactivate() {
         target = null;
-        ChatUtils.info("AimAssist deactivated.");
+        if (chatNotifications.get()) {
+            ChatUtils.info("AimAssist deactivated.");
+        }
     }
 
     @EventHandler
