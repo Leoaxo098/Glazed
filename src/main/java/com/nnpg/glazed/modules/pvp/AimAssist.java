@@ -17,7 +17,6 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.Vec3d;
 import org.joml.Vector3d;
 
 import java.util.Set;
@@ -158,18 +157,12 @@ public class AimAssist extends Module {
     }
 
     private boolean inFov(Entity entity, double fov) {
-        if (mc.player == null) return false;
-        
-        Vec3d playerPos = mc.player.getEyePos();
-        Vec3d entityPos = entity.getBoundingBox().getCenter();
-        
-        double deltaX = entityPos.x - playerPos.x;
-        double deltaZ = entityPos.z - playerPos.z;
-        
-        double angleToEntity = Math.toDegrees(Math.atan2(deltaZ, deltaX)) - 90;
-        double deltaAngle = Math.abs(MathHelper.wrapDegrees(angleToEntity - mc.player.getYaw()));
-        
-        return deltaAngle <= fov / 2.0;
+        if (fov >= 360) return true;
+        float[] angle = PlayerUtils.calculateAngle(entity.getBoundingBox().getCenter());
+        double xDist = MathHelper.angleBetween(angle[0], mc.player.getYaw());
+        double yDist = MathHelper.angleBetween(angle[1], mc.player.getPitch());
+        double angleDistance = Math.hypot(xDist, yDist);
+        return angleDistance <= fov;
     }
 
     @Override
