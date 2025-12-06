@@ -17,6 +17,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
 import org.joml.Vector3d;
 
 import java.util.Set;
@@ -105,7 +106,7 @@ public class AimAssist extends Module {
             if (!ignoreWalls.get() && !PlayerUtils.canSeeEntity(entity)) return false;
             if (entity == mc.player || !entities.get().contains(entity.getType())) return false;
             if (entity instanceof PlayerEntity && !Friends.get().shouldAttack((PlayerEntity) entity)) return false;
-            return RejectsUtils.inFov(entity, fov.get());
+            return inFov(entity, fov.get());
         }, priority.get());
     }
 
@@ -154,6 +155,21 @@ public class AimAssist extends Module {
                 toRotate = deltaAngle;
             mc.player.setPitch(mc.player.getPitch() + (float) toRotate);
         }
+    }
+
+    private boolean inFov(Entity entity, double fov) {
+        if (mc.player == null) return false;
+        
+        Vec3d playerPos = mc.player.getEyePos();
+        Vec3d entityPos = entity.getBoundingBox().getCenter();
+        
+        double deltaX = entityPos.x - playerPos.x;
+        double deltaZ = entityPos.z - playerPos.z;
+        
+        double angleToEntity = Math.toDegrees(Math.atan2(deltaZ, deltaX)) - 90;
+        double deltaAngle = Math.abs(MathHelper.wrapDegrees(angleToEntity - mc.player.getYaw()));
+        
+        return deltaAngle <= fov / 2.0;
     }
 
     @Override
