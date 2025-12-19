@@ -126,6 +126,7 @@ public static final Category pvp = new Category("Glazed PVP", new ItemStack(Item
         Modules.get().add(new OminousVaultOpener());
 		Modules.get().add(new AutoTotemOrder());
 		Modules.get().add(new DensitySwap());
+		Modules.get().add(new BoxMiner());
     }
 
     @EventHandler
