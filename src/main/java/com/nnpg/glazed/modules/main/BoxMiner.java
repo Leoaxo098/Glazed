@@ -11,6 +11,7 @@ import meteordevelopment.orbit.EventHandler;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.math.BlockPos;
 import baritone.api.BaritoneAPI;
+import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalTwoBlocks;
 
 public class BoxMiner extends Module {
@@ -30,22 +31,37 @@ public class BoxMiner extends Module {
     private final Setting<Integer> corner2Z = sgGeneral.add(new IntSetting.Builder()
         .name("corner-2-z").description("Corner 2 Z coordinate").defaultValue(30).build());
 
+    private final Setting<MiningMode> miningMode = sgGeneral.add(new EnumSetting.Builder<MiningMode>()
+        .name("mining-mode")
+        .description("3x3: uses Amethyst Pickaxe sweeping layers. Tunnel: uses normal pickaxe with 1x2 tunnels covering the full box.")
+        .defaultValue(MiningMode.THREE_BY_THREE)
+        .build());
+
+    // 3x3 mode only settings
+    private final Setting<Integer> layerSpacing = sgGeneral.add(new IntSetting.Builder()
+        .name("layer-spacing").description("Vertical spacing between mining layers (3x3 mode only)").defaultValue(3).min(1).max(10).build());
+    private final Setting<Integer> xSpacing = sgGeneral.add(new IntSetting.Builder()
+        .name("x-spacing").description("Horizontal spacing between mining points (3x3 mode only)").defaultValue(3).min(1).max(10).build());
+
+    private final Setting<Integer> amethystPickaxeSlot = sgTool.add(new IntSetting.Builder()
+        .name("amethyst-pickaxe-slot").description("Hotbar slot for Amethyst Pickaxe (1-9, 0 for auto-find)").defaultValue(0).min(0).max(9).build());
     private final Setting<Integer> normalPickaxeSlot = sgTool.add(new IntSetting.Builder()
         .name("normal-pickaxe-slot").description("Hotbar slot for Normal Pickaxe (1-9, 0 for auto-find)").defaultValue(0).min(0).max(9).build());
     private final Setting<Boolean> autoFindTools = sgTool.add(new BoolSetting.Builder()
-        .name("auto-find-tools").description("Automatically find pickaxe in inventory if slot is set to 0").defaultValue(true).build());
+        .name("auto-find-tools").description("Automatically find tools by name if slots are set to 0").defaultValue(true).build());
 
     private MiningState state = MiningState.IDLE;
+    private int currentY, currentX, currentZ;
     private int minX, maxX, minY, maxY, minZ, maxZ;
 
-    // Current tunnel position
-    private int currentY;   // bottom block of the 1x2 tunnel
-    private int currentX;   // which tunnel column we're on
-    private int currentZ;   // progress along the tunnel
-    private boolean goingPositiveZ; // snake direction
+    // 3x3 mode
+    private int descentStartX, descentStartZ;
+
+    // Tunnel mode
+    private boolean tunnelGoingPositiveZ;
 
     public BoxMiner() {
-        super(Categories.World, "box-miner", "Mines a box area using 1x2 tunnels with a normal pickaxe.");
+        super(Categories.World, "box-miner", "Mines a box area using Baritone. Supports 3x3 pickaxe mode and 1x2 tunnel mode.");
     }
 
     @Override
@@ -57,22 +73,14 @@ public class BoxMiner extends Module {
         minZ = Math.min(corner1Z.get(), corner2Z.get());
         maxZ = Math.max(corner1Z.get(), corner2Z.get());
 
-        if (!switchToNormalPickaxe()) {
-            ChatUtils.error("BoxMiner: No pickaxe found! Aborting.");
-            toggle();
-            return;
+        ChatUtils.info("BoxMiner started in %s mode. Box: (%d,%d,%d) to (%d,%d,%d)",
+            miningMode.get().name(), minX, minY, minZ, maxX, maxY, maxZ);
+
+        if (miningMode.get() == MiningMode.TUNNEL) {
+            initTunnel();
+        } else {
+            initThreeByThree();
         }
-
-        // Start at bottom-left-front, sweep upward in 1x2 slices
-        currentY = minY;
-        currentX = minX;
-        currentZ = minZ;
-        goingPositiveZ = true;
-
-        ChatUtils.info("BoxMiner started. Mining (%d,%d,%d) to (%d,%d,%d) with 1x2 tunnels.",
-            minX, minY, minZ, maxX, maxY, maxZ);
-
-        moveToCurrentPos();
     }
 
     @Override
@@ -82,60 +90,145 @@ public class BoxMiner extends Module {
         ChatUtils.info("BoxMiner stopped.");
     }
 
-    private void moveToCurrentPos() {
+    // -------------------------------------------------------------------------
+    // 3x3 Mode
+    // -------------------------------------------------------------------------
+
+    private void initThreeByThree() {
+        currentY = maxY;
+        currentX = minX + 1;
+        currentZ = minZ;
+        state = MiningState.MOVING_TO_LAYER;
+        moveToNextPosition();
+    }
+
+    private void moveToNextPosition() {
         if (mc.player == null) return;
-        switchToNormalPickaxe();
-        // GoalTwoBlocks = mine a 1x2 (feet + head) column at this XZ
+        switchToAmethystPickaxe();
         BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess()
-            .setGoalAndPath(new GoalTwoBlocks(currentX, currentY, currentZ));
+            .setGoalAndPath(new GoalBlock(currentX, currentY, currentZ));
+        state = MiningState.MOVING_TO_POSITION;
+    }
+
+    private void mineCurrentBlock() {
+        if (mc.player == null) return;
+        switchToAmethystPickaxe();
+        BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess()
+            .setGoalAndPath(new GoalBlock(currentX, currentY, currentZ));
         state = MiningState.MINING;
     }
 
-    private void advance() {
-        // Step along Z within the current tunnel
-        currentZ += goingPositiveZ ? 1 : -1;
+    private void startDescent() {
+        if (mc.player == null) return;
+        descentStartX = currentX;
+        descentStartZ = currentZ;
+        if (switchToNormalPickaxe()) {
+            ChatUtils.info("Descending to next layer. Y: %d -> %d", currentY, currentY - layerSpacing.get());
+            currentY -= layerSpacing.get();
+            state = MiningState.DESCENDING;
+            BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess()
+                .setGoalAndPath(new GoalBlock(descentStartX, currentY, descentStartZ));
+        } else {
+            ChatUtils.error("Cannot descend without normal pickaxe!");
+            toggle();
+        }
+    }
 
-        boolean pastEnd = goingPositiveZ ? currentZ > maxZ : currentZ < minZ;
+    private void advanceToNextBlock() {
+        currentZ++;
+        if (currentZ > maxZ) {
+            currentZ = minZ;
+            currentX += xSpacing.get();
+            if (currentX > maxX - 1) {
+                currentX = minX + 1;
+                currentY -= layerSpacing.get();
+                if (currentY < minY + 1) {
+                    ChatUtils.info("BoxMiner (3x3 mode) completed!");
+                    toggle();
+                    return;
+                }
+                startDescent();
+                return;
+            }
+        }
+        moveToNextPosition();
+    }
+
+    // -------------------------------------------------------------------------
+    // Tunnel Mode (1x2, normal pickaxe only, covers every block)
+    // -------------------------------------------------------------------------
+
+    private void initTunnel() {
+        if (!switchToNormalPickaxe()) {
+            ChatUtils.error("BoxMiner: No pickaxe found! Aborting.");
+            toggle();
+            return;
+        }
+        currentY = minY;
+        currentX = minX;
+        currentZ = minZ;
+        tunnelGoingPositiveZ = true;
+        moveToTunnelPos();
+    }
+
+    private void moveToTunnelPos() {
+        if (mc.player == null) return;
+        switchToNormalPickaxe();
+        BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess()
+            .setGoalAndPath(new GoalTwoBlocks(currentX, currentY, currentZ));
+        state = MiningState.TUNNEL_MINING;
+    }
+
+    private void advanceTunnel() {
+        // Step along Z
+        currentZ += tunnelGoingPositiveZ ? 1 : -1;
+        boolean pastEnd = tunnelGoingPositiveZ ? currentZ > maxZ : currentZ < minZ;
 
         if (!pastEnd) {
-            moveToCurrentPos();
+            moveToTunnelPos();
             return;
         }
 
-        // End of this Z run — move to next X column, flip direction
-        currentZ = goingPositiveZ ? maxZ : minZ;
-        goingPositiveZ = !goingPositiveZ;
+        // End of Z run — flip direction, step to next X column
+        currentZ = tunnelGoingPositiveZ ? maxZ : minZ;
+        tunnelGoingPositiveZ = !tunnelGoingPositiveZ;
         currentX++;
 
         if (currentX <= maxX) {
-            moveToCurrentPos();
+            moveToTunnelPos();
             return;
         }
 
-        // Finished all X columns on this Y pair — step up 2 blocks
+        // All X columns done on this Y pair — step up 2 blocks
         currentX = minX;
-        goingPositiveZ = true;
         currentZ = minZ;
+        tunnelGoingPositiveZ = true;
         currentY += 2;
 
         if (currentY > maxY - 1) {
-            ChatUtils.info("BoxMiner completed! Entire box mined.");
+            ChatUtils.info("BoxMiner (tunnel mode) completed!");
             toggle();
             return;
         }
 
-        ChatUtils.info("Moving up to next level. Y=%d", currentY);
-        moveToCurrentPos();
+        ChatUtils.info("Moving up to Y=%d", currentY);
+        moveToTunnelPos();
     }
 
-    private boolean switchToNormalPickaxe() {
+    // -------------------------------------------------------------------------
+    // Tool helpers
+    // -------------------------------------------------------------------------
+
+    private boolean switchToAmethystPickaxe() {
         if (mc.player == null) return false;
-        int slot = normalPickaxeSlot.get();
+        int slot = amethystPickaxeSlot.get();
         if (slot == 0 && autoFindTools.get()) {
-            FindItemResult result = InvUtils.find(itemStack ->
-                itemStack.isIn(ItemTags.PICKAXES));
+            FindItemResult result = InvUtils.find(itemStack -> {
+                String name = itemStack.getName().getString().toLowerCase();
+                return name.contains("amethyst") && itemStack.isIn(ItemTags.PICKAXES);
+            });
             if (result.found()) { InvUtils.swap(result.slot(), false); return true; }
-            ChatUtils.error("No pickaxe found in inventory!");
+            ChatUtils.error("Amethyst Pickaxe not found in inventory!");
             return false;
         } else if (slot > 0 && slot <= 9) {
             InvUtils.swap(slot - 1, false);
@@ -144,26 +237,84 @@ public class BoxMiner extends Module {
         return false;
     }
 
+    private boolean switchToNormalPickaxe() {
+        if (mc.player == null) return false;
+        int slot = normalPickaxeSlot.get();
+        if (slot == 0 && autoFindTools.get()) {
+            FindItemResult result = InvUtils.find(itemStack -> {
+                String name = itemStack.getName().getString().toLowerCase();
+                return !name.contains("amethyst") && itemStack.isIn(ItemTags.PICKAXES);
+            });
+            if (result.found()) { InvUtils.swap(result.slot(), false); return true; }
+            ChatUtils.error("Normal Pickaxe not found in inventory!");
+            return false;
+        } else if (slot > 0 && slot <= 9) {
+            InvUtils.swap(slot - 1, false);
+            return true;
+        }
+        return false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Tick
+    // -------------------------------------------------------------------------
+
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || state == MiningState.IDLE) return;
 
         var baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
 
-        if (state == MiningState.MINING && !baritone.getPathingBehavior().isPathing()) {
-            BlockPos playerPos = mc.player.getBlockPos();
-            BlockPos target = new BlockPos(currentX, currentY, currentZ);
-
-            if (playerPos.isWithinDistance(target, 3)) {
-                advance();
-            } else {
-                // Baritone gave up — retry
-                moveToCurrentPos();
+        switch (state) {
+            case MOVING_TO_POSITION -> {
+                if (!baritone.getPathingBehavior().isPathing()) {
+                    BlockPos playerPos = mc.player.getBlockPos();
+                    BlockPos targetPos = new BlockPos(currentX, currentY, currentZ);
+                    if (playerPos.isWithinDistance(targetPos, 5)) mineCurrentBlock();
+                    else moveToNextPosition();
+                }
+            }
+            case MINING -> {
+                if (!baritone.getPathingBehavior().isPathing()) advanceToNextBlock();
+            }
+            case DESCENDING -> {
+                if (!baritone.getPathingBehavior().isPathing()) {
+                    if (Math.abs(mc.player.getBlockPos().getY() - currentY) <= 1) {
+                        currentZ = minZ;
+                        ChatUtils.info("Descent complete. Starting new layer at Y=%d", currentY);
+                        moveToNextPosition();
+                    } else {
+                        BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess()
+                            .setGoalAndPath(new GoalBlock(descentStartX, currentY, descentStartZ));
+                    }
+                }
+            }
+            case MOVING_TO_LAYER -> {
+                if (!baritone.getPathingBehavior().isPathing()) {
+                    state = MiningState.MOVING_TO_POSITION;
+                    moveToNextPosition();
+                }
+            }
+            case TUNNEL_MINING -> {
+                if (!baritone.getPathingBehavior().isPathing()) {
+                    BlockPos playerPos = mc.player.getBlockPos();
+                    BlockPos targetPos = new BlockPos(currentX, currentY, currentZ);
+                    if (playerPos.isWithinDistance(targetPos, 3)) advanceTunnel();
+                    else moveToTunnelPos();
+                }
             }
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Enums
+    // -------------------------------------------------------------------------
+
+    public enum MiningMode {
+        THREE_BY_THREE, TUNNEL
+    }
+
     private enum MiningState {
-        IDLE, MINING
+        IDLE, MOVING_TO_LAYER, MOVING_TO_POSITION, MINING, DESCENDING, TUNNEL_MINING
     }
 }
