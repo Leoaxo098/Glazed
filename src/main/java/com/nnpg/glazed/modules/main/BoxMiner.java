@@ -8,7 +8,7 @@ import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.PickaxeItem;
+import net.minecraft.item.MiningToolItem;
 import baritone.api.BaritoneAPI;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.utils.IPlayerContext;
@@ -152,7 +152,7 @@ public class BoxMiner extends Module {
             // Auto-find Amethyst Pickaxe
             FindItemResult result = InvUtils.find(itemStack -> {
                 String name = itemStack.getName().getString().toLowerCase();
-                return name.contains("amethyst") && itemStack.getItem() instanceof PickaxeItem;
+                return name.contains("amethyst") && itemStack.getItem() instanceof MiningToolItem;
             });
             
             if (result.found()) {
@@ -180,7 +180,7 @@ public class BoxMiner extends Module {
             // Auto-find normal pickaxe (not Amethyst)
             FindItemResult result = InvUtils.find(itemStack -> {
                 String name = itemStack.getName().getString().toLowerCase();
-                return !name.contains("amethyst") && itemStack.getItem() instanceof PickaxeItem;
+                return !name.contains("amethyst") && itemStack.getItem() instanceof MiningToolItem;
             });
             
             if (result.found()) {
