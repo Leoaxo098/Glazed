@@ -1,33 +1,29 @@
 package com.nnpg.glazed.modules.pvp;
 
 import com.nnpg.glazed.GlazedAddon;
+import meteordevelopment.meteorclient.events.entity.player.AttackEntityEvent;
+import meteordevelopment.meteorclient.events.entity.player.DoAttackEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.utils.Utils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.item.Items;
+import net.minecraft.enchantment.Enchantments;
 import net.minecraft.item.ItemStack;
-import net.minecraft.util.Hand;
+import net.minecraft.item.Items;
+import net.minecraft.util.hit.HitResult;
 
 public class LungeSwapper extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
-    // ---- Instant Item Settings ----
-    private final Setting<InstantMode> instantMode = sgGeneral.add(new EnumSetting.Builder<InstantMode>()
-        .name("instant-mode")
-        .description("How to select the instant-cooldown item (wind charge / golden apple).")
-        .defaultValue(InstantMode.Auto)
-        .build()
-    );
-
+    // ---- Instant Item Slot ----
     private final Setting<Integer> instantSlot = sgGeneral.add(new IntSetting.Builder()
         .name("instant-slot")
-        .description("The hotbar slot (1-9) containing the instant-cooldown item.")
+        .description("The hotbar slot (1-9) containing the instant-cooldown item (wind charge / golden apple). Must be holding this for the swap to trigger.")
         .sliderRange(1, 9)
         .defaultValue(1)
         .min(1)
-        .visible(() -> instantMode.get() == InstantMode.Slot)
         .build()
     );
 
@@ -49,31 +45,40 @@ public class LungeSwapper extends Module {
         .build()
     );
 
-    // ---- Swap Back Settings ----
-    private final Setting<SwapBackMode> swapBackMode = sgGeneral.add(new EnumSetting.Builder<SwapBackMode>()
-        .name("swap-back-mode")
-        .description("What to swap to after the lunge attack.")
-        .defaultValue(SwapBackMode.Previous)
-        .build()
-    );
-
-    private final Setting<Integer> swapBackSlot = sgGeneral.add(new IntSetting.Builder()
-        .name("swap-back-slot")
-        .description("The hotbar slot (1-9) to swap to after lunging.")
-        .sliderRange(1, 9)
-        .defaultValue(1)
-        .min(1)
-        .visible(() -> swapBackMode.get() == SwapBackMode.Configured)
-        .build()
-    );
-
-    // ---- General Settings ----
-    private final Setting<Integer> delayTicks = sgGeneral.add(new IntSetting.Builder()
-        .name("delay-ticks")
-        .description("Delay in ticks before starting the sequence.")
-        .sliderRange(0, 10)
+    // ---- Charge Delay ----
+    private final Setting<Integer> chargeDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("charge-delay")
+        .description("Ticks to wait after equipping instant item before swap is allowed (cooldown charging time).")
+        .sliderRange(0, 40)
         .defaultValue(0)
         .min(0)
+        .build()
+    );
+
+    // ---- Swap Back ----
+    private final Setting<Boolean> swapBack = sgGeneral.add(new BoolSetting.Builder()
+        .name("swap-back")
+        .description("Swap back to the instant slot after a delay.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> swapBackDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("swap-back-delay")
+        .description("Delay in ticks before swapping back to the instant slot.")
+        .defaultValue(2)
+        .min(0)
+        .max(100)
+        .sliderRange(0, 20)
+        .visible(swapBack::get)
+        .build()
+    );
+
+    // ---- General ----
+    private final Setting<Boolean> swapOnMiss = sgGeneral.add(new BoolSetting.Builder()
+        .name("swap-on-miss")
+        .description("Swap even when attacking the air (for lunge travelling).")
+        .defaultValue(true)
         .build()
     );
 
@@ -85,157 +90,111 @@ public class LungeSwapper extends Module {
     );
 
     // ---- State ----
-    private int prevSlot = -1;
-    private int stage = 0;          // 0=waiting, 1=swap to instant, 2=attack+swap, 3=final swap
-    private int tickCounter = 0;
+    private int chargeTimer = 0;
+    private boolean charging = false;
+    private int backTimer = 0;
+    private boolean awaitingBack = false;
+    private int lastHeldSlot = -1;
 
     public LungeSwapper() {
-        super(GlazedAddon.pvp, "lunge-swapper", "Swaps to an instant-cooldown item, left-clicks, then swaps to a lunge-enchanted spear in the same tick for the attribute swap exploit.");
+        super(GlazedAddon.pvp, "lunge-swapper", "When you attack while holding an instant item in the configured slot, swaps to a lunge-enchanted spear for the attribute swap exploit. Auto-returns to the instant slot.");
     }
 
     // ---- Enums ----
-    public enum InstantMode {
-        Auto,
-        Slot
-    }
+    public enum LungeMode { Auto, Slot }
 
-    public enum LungeMode {
-        Auto,
-        Slot
-    }
-
-    public enum SwapBackMode {
-        None,
-        Previous,
-        Configured
-    }
-
-    // ---- Activation ----
-    @Override
-    public void onActivate() {
-        if (mc.player == null || mc.world == null) {
-            toggle();
-            return;
-        }
-
-        prevSlot = mc.player.getInventory().getSelectedSlot();
-
-        // Check if we already hold an instant-cooldown item
-        if (isHoldingInstantItem()) {
-            if (debug.get()) info("Already holding instant item, going straight to attack phase.");
-            stage = 2; // Skip swap, go straight to attack+swap
-        } else {
-            stage = 1; // Need to swap first
-        }
-
-        tickCounter = 0;
-    }
-
-    // ---- Tick Handler ----
+    // ---- Attack event (swing in air) ----
     @EventHandler
-    private void onTick(TickEvent.Pre event) {
-        if (mc.player == null || mc.world == null) {
-            toggle();
-            return;
-        }
+    private void onAttack(DoAttackEvent event) {
+        if (mc.crosshairTarget != null && mc.crosshairTarget.getType() == HitResult.Type.BLOCK) return;
+        if (!isHoldingValidInstantItem()) return;
+        if (!swapOnMiss.get()) return;
 
-        // Delay phase
-        if (tickCounter < delayTicks.get()) {
-            tickCounter++;
-            return;
-        }
-
-        switch (stage) {
-            case 1 -> handleSwapToInstant();
-            case 2 -> handleAttackAndSwapToLunge();
-            case 3 -> handleFinalSwap();
-            default -> toggle();
-        }
+        performSwap();
     }
 
-    // ---- Stage 1: Swap to instant item ----
-    private void handleSwapToInstant() {
-        if (debug.get()) info("Stage 1: Swapping to instant item.");
+    // ---- Attack entity event ----
+    @EventHandler
+    private void onAttackEntity(AttackEntityEvent event) {
+        if (!isHoldingValidInstantItem()) return;
+        if (swapOnMiss.get()) return;
 
-        int instantItemSlot = findInstantItemSlot();
-        if (instantItemSlot == -1) {
-            error("No instant-cooldown item (wind charge / golden apple) found in hotbar.");
-            toggle();
-            return;
-        }
-
-        // If already holding it, skip directly to attack phase
-        if (mc.player.getInventory().getSelectedSlot() == instantItemSlot) {
-            if (debug.get()) info("Already on instant slot, skipping to attack phase.");
-            stage = 2;
-            return;
-        }
-
-        InvUtils.swap(instantItemSlot, false);
-        stage = 2; // Next tick will do attack+swap
+        performSwap();
     }
 
-    // ---- Stage 2: Attack + Swap to Lunge (same tick) ----
-    private void handleAttackAndSwapToLunge() {
-        if (debug.get()) info("Stage 2: Attacking + swapping to lunge spear (same tick).");
+    // ---- Core swap logic ----
+    private void performSwap() {
+        if (awaitingBack) return;
 
-        int lungeSpearSlot = findLungeSpearSlot();
-        if (lungeSpearSlot == -1) {
-            error("No lunge-enchanted spear found in hotbar.");
-            toggle();
-            return;
-        }
-
-        // --- The attribute swap exploit: attack + swap in the same tick ---
-
-        // 1. Left-click swing (simulate attack using attack key)
-        mc.player.swingHand(Hand.MAIN_HAND);
-        mc.options.attackKey.setPressed(true);
-
-        // 2. Immediately swap to lunge spear while the attack is being processed
-        InvUtils.swap(lungeSpearSlot, false);
-
-        // Release attack key (will register on next game cycle, but the swap already happened)
-        mc.options.attackKey.setPressed(false);
-
-        if (debug.get()) info("Attack + swap to lunge spear executed in same tick.");
-
-        stage = 3; // Next tick handles optional swap back
-    }
-
-    // ---- Stage 3: Optional swap back ----
-    private void handleFinalSwap() {
-        if (debug.get()) info("Stage 3: Handling final swap.");
-
-        switch (swapBackMode.get()) {
-            case Previous -> {
-                if (prevSlot != -1 && prevSlot >= 0 && prevSlot < 9) {
-                    InvUtils.swap(prevSlot, false);
-                    if (debug.get()) info("Swapped back to previous slot: " + (prevSlot + 1));
-                }
+        // Check charge delay
+        if (charging) {
+            if (chargeTimer < chargeDelay.get()) {
+                chargeTimer++;
+                if (debug.get()) info("Charging... " + chargeTimer + "/" + chargeDelay.get());
+                return;
             }
-            case Configured -> {
-                int slot = swapBackSlot.get() - 1;
-                if (slot >= 0 && slot < 9) {
-                    InvUtils.swap(slot, false);
-                    if (debug.get()) info("Swapped to configured slot: " + (slot + 1));
-                }
-            }
-            case None -> {
-                if (debug.get()) info("Staying on lunge spear.");
-            }
+            charging = false;
+        } else if (chargeDelay.get() > 0) {
+            // Start charging
+            charging = true;
+            chargeTimer = 0;
+            if (debug.get()) info("Started charging (delay: " + chargeDelay.get() + " ticks).");
+            return;
         }
 
-        if (debug.get()) info("Lunge Swapper sequence complete. Toggling off.");
+        // Find lunge spear slot
+        int spearSlot = findLungeSpearSlot();
+        if (spearSlot == -1) {
+            if (debug.get()) error("No lunge-enchanted spear found.");
+            return;
+        }
 
-        // Reset and disable
-        reset();
-        toggle();
+        if (spearSlot == mc.player.getInventory().getSelectedSlot()) {
+            if (debug.get()) info("Already holding the spear.");
+            return;
+        }
+
+        // Save current slot for swap-back
+        lastHeldSlot = mc.player.getInventory().getSelectedSlot();
+
+        // Swap to spear — InvUtils.swap handles the attribute swap via server packet
+        if (debug.get()) info("Swapping to lunge spear at slot " + (spearSlot + 1));
+        InvUtils.swap(spearSlot, false);
+
+        // Start swap-back timer
+        if (swapBack.get()) {
+            awaitingBack = true;
+            backTimer = swapBackDelay.get();
+        }
     }
 
-    // ---- Helper: Check if holding an instant-cooldown item ----
-    private boolean isHoldingInstantItem() {
+    // ---- Tick handler for swap-back ----
+    @EventHandler
+    private void onTick(TickEvent.Post event) {
+        if (!awaitingBack) return;
+
+        if (backTimer-- > 0) return;
+
+        // Swap back to the instant item slot
+        if (lastHeldSlot >= 0 && lastHeldSlot < 9) {
+            if (debug.get()) info("Swapping back to slot " + (lastHeldSlot + 1));
+            InvUtils.swap(lastHeldSlot, false);
+        }
+
+        awaitingBack = false;
+        lastHeldSlot = -1;
+    }
+
+    // ---- Check if holding the configured instant item ----
+    private boolean isHoldingValidInstantItem() {
         if (mc.player == null) return false;
+
+        int heldSlot = mc.player.getInventory().getSelectedSlot();
+        int configSlot = instantSlot.get() - 1;
+
+        // Must be holding the configured slot
+        if (heldSlot != configSlot) return false;
+
         ItemStack held = mc.player.getMainHandStack();
         return isInstantItem(held);
     }
@@ -248,81 +207,49 @@ public class LungeSwapper extends Module {
             || stack.isOf(Items.ENCHANTED_GOLDEN_APPLE);
     }
 
-    // ---- Helper: Find instant item slot in hotbar ----
-    private int findInstantItemSlot() {
-        if (instantMode.get() == InstantMode.Slot) {
-            int slot = instantSlot.get() - 1;
-            if (slot >= 0 && slot < 9) {
-                ItemStack stack = mc.player.getInventory().getStack(slot);
-                if (isInstantItem(stack)) return slot;
-                if (debug.get()) error("Configured instant slot " + (slot + 1) + " does not contain an instant item.");
-            }
-            return -1;
-        }
-
-        // Auto: scan hotbar
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (isInstantItem(stack)) return i;
-        }
-        return -1;
-    }
-
     // ---- Helper: Find lunge-enchanted spear slot ----
     private int findLungeSpearSlot() {
         if (lungeMode.get() == LungeMode.Slot) {
             int slot = lungeSlot.get() - 1;
             if (slot >= 0 && slot < 9) {
-                ItemStack stack = mc.player.getInventory().getStack(slot);
-                if (hasLungeEnchant(stack)) return slot;
-                if (debug.get()) error("Configured lunge slot " + (slot + 1) + " does not have a lunge enchantment.");
+                if (hasLungeEnchant(mc.player.getInventory().getStack(slot))) return slot;
+                if (debug.get()) error("Configured lunge slot " + (slot + 1) + " has no lunge enchant.");
             }
             return -1;
         }
 
-        // Auto: scan hotbar for lunge enchantment
+        // Auto: find best lunge spear
         int bestSlot = -1;
         int highestLevel = 0;
 
         for (int i = 0; i < 9; i++) {
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (!stack.isEmpty()) {
-                String enchantString = stack.getEnchantments().toString();
-                if (debug.get()) info("Slot " + (i + 1) + " enchants: " + enchantString);
-
-                if (enchantString.contains("lunge") || enchantString.contains("minecraft:lunge")) {
-                    try {
-                        int levelStart = enchantString.lastIndexOf("=>");
-                        if (levelStart != -1) {
-                            String levelStr = enchantString.substring(levelStart + 2).replaceAll("[^0-9]", "");
-                            int level = Integer.parseInt(levelStr);
-                            if (debug.get()) info("Found lunge level " + level + " in slot " + (i + 1));
-                            if (level > highestLevel) {
-                                highestLevel = level;
-                                bestSlot = i;
-                            }
-                        }
-                    } catch (Exception e) {
-                        if (debug.get()) error("Error parsing enchant level: " + e.getMessage());
+                int lungeLevel = Utils.getEnchantmentLevel(stack, Enchantments.LUNGE);
+                if (lungeLevel > 0) {
+                    if (debug.get()) info("Slot " + (i + 1) + ": lunge level " + lungeLevel);
+                    if (lungeLevel > highestLevel) {
+                        highestLevel = lungeLevel;
+                        bestSlot = i;
                     }
                 }
             }
         }
-
         return bestSlot;
     }
 
     // ---- Helper: Check if item has lunge enchant ----
     private boolean hasLungeEnchant(ItemStack stack) {
         if (stack.isEmpty()) return false;
-        String enchantString = stack.getEnchantments().toString();
-        return enchantString.contains("lunge") || enchantString.contains("minecraft:lunge");
+        return Utils.getEnchantmentLevel(stack, Enchantments.LUNGE) > 0;
     }
 
-    // ---- Reset state ----
-    private void reset() {
-        stage = 0;
-        tickCounter = 0;
-        prevSlot = -1;
+    @Override
+    public void onDeactivate() {
+        chargeTimer = 0;
+        charging = false;
+        backTimer = 0;
+        awaitingBack = false;
+        lastHeldSlot = -1;
     }
 }
