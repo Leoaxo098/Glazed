@@ -101,7 +101,12 @@ public class GlazedAddon extends MeteorAddon {
         Modules.get().add(new PremiumTunnelBaseFinder());
         Modules.get().add(new AutoTreeFarmer());
         Modules.get().add(new AdminList());
-        Modules.get().add(new BoxMiner());
+        try {
+            Modules.get().add(new BoxMiner());
+        } catch (NoClassDefFoundError e) {
+            System.out.println("[Glazed] BoxMiner disabled: Baritone not found");
+        }
+        Modules.get().add(new LungeSwapper());
         Modules.get().add(new StunMace());
     }
 

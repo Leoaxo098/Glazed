@@ -61,6 +61,7 @@ public class BreachSwap extends Module {
     private final Setting<Integer> delay = sgGeneral.add(new IntSetting.Builder().name("swap-back-delay").description("Delay in ticks before swapping back to the previous slot.").sliderRange(1, 20).defaultValue(8).min(1).visible(swapBack::get).build());
     private int prevSlot = -1;
     private int dDelay = 0;
+    private boolean didSwap = false;
     public BreachSwap() {
         super(GlazedAddon.pvp, "breach-swap", "Swaps with the breach mace in a target slot on attack");
     }
@@ -120,22 +121,29 @@ public class BreachSwap extends Module {
             }
         }
         
-        if (swapBack.get()) {
-            // PlayerInventory no longer exposes getSelectedSlot(); use the selectedSlot field instead
-            prevSlot = com.nnpg.glazed.utils.InventoryUtils.getSelectedSlot(mc.player.getInventory());
-        }
+        didSwap = false;
 
         if (autoSwap.get()) {
             // Find breach mace in hotbar
             int breachMaceSlot = findBreachMace();
             if (breachMaceSlot != -1) {
+                if (swapBack.get()) {
+                    prevSlot = com.nnpg.glazed.utils.InventoryUtils.getSelectedSlot(mc.player.getInventory());
+                }
                 InvUtils.swap(breachMaceSlot, false);
+                didSwap = true;
+            } else if (debugMode.get()) {
+                warning("No breach mace found in hotbar, skipping swap.");
             }
         } else {
+            if (swapBack.get()) {
+                prevSlot = com.nnpg.glazed.utils.InventoryUtils.getSelectedSlot(mc.player.getInventory());
+            }
             InvUtils.swap(targetSlot.get() - 1, false);
+            didSwap = true;
         }
 
-        if (swapBack.get() && prevSlot != -1) {
+        if (swapBack.get() && didSwap && prevSlot != -1) {
             dDelay = delay.get();
         }
     }
