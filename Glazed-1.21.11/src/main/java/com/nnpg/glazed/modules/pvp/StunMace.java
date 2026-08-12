@@ -1,7 +1,6 @@
 package com.nnpg.glazed.modules.pvp;
 
 import com.nnpg.glazed.GlazedAddon;
-import meteordevelopment.meteorclient.events.entity.player.DoAttackEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
@@ -19,7 +18,8 @@ public class StunMace extends Module {
 
     private final Setting<Integer> axeSlot;
     private final Setting<Integer> maceSlot;
-    private final Setting<Double> fallDistance;
+    private final Setting<Integer> fallDistance;
+    private final Setting<Boolean> ignoreShield;
     private final Setting<Boolean> enableReturnSlot;
     private final Setting<Integer> returnSlot;
     private final Setting<DelayMode> delayMode;
@@ -65,16 +65,22 @@ public class StunMace extends Module {
             .build()
         );
 
-        fallDistance = sg.add(new DoubleSetting.Builder()
-            .name("min-cd")
-            .description("Min attack cooldown (0-1.0) before the combo can fire. 0.7+ = full damage on both hits.")
-            .defaultValue(0)
-            .min(0)
-            .max(1)
+        fallDistance = sg.add(new IntSetting.Builder()
+            .name("fall-distance")
+            .description("Minimum fall distance to trigger the combo.")
+            .defaultValue(2)
+            .min(1)
+            .max(10)
             .build()
         );
 
-        
+        ignoreShield = sg.add(new BoolSetting.Builder()
+            .name("ignore-shield")
+            .description("Perform the combo on any player, not just those blocking with a shield.")
+            .defaultValue(false)
+            .build()
+        );
+
         enableReturnSlot = sg.add(new BoolSetting.Builder()
             .name("return-to-slot")
             .description("Automatically return to a specific hotbar slot after combo.")
@@ -146,69 +152,26 @@ public class StunMace extends Module {
     }
 
     @EventHandler
-    private void onAttack(DoAttackEvent event) {
+    private void onTick(TickEvent.Post event) {
         if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
 
         ClientPlayerEntity player = mc.player;
         long currentTime = System.currentTimeMillis();
 
-        // Skip if still in combo or on cooldown between combos
-        if (comboActive || currentTime - lastComboTime < comboDelay.get()) {
-            return;
-        }
-
-        // Respect the server attack cooldown so both hits deal meaningful damage
-        if (player.getAttackCooldownProgress(0) < fallDistance.get()) {
-            return;
-        }
-
-        PlayerEntity target = getTarget();
-        if (target == null) return;
-
-        comboActive = true;
-        currentTarget = target;
-
-        // Axe hit
-        InvUtils.swap(axeSlot.get(), false);
-        mc.interactionManager.attackEntity(player, target);
-        player.swingHand(Hand.MAIN_HAND);
-
-        // Set up delay for mace
-        DelayMode mode = delayMode.get();
-        if (mode == DelayMode.None) {
-            // No delay - hit mace immediately
-            InvUtils.swap(maceSlot.get(), false);
-            mc.interactionManager.attackEntity(player, target);
-            player.swingHand(Hand.MAIN_HAND);
-
-            // Return to chosen slot immediately if enabled
-            if (enableReturnSlot.get()) {
-                InvUtils.swap(returnSlot.get(), false);
-            }
-
+        // Reset combo if grounded
+        if (player.isOnGround() && comboActive) {
             comboActive = false;
             currentTarget = null;
-            lastComboTime = currentTime;
-        } else {
-            // Preset or Random delay - wait for next tick
-            axeHitTime = currentTime;
-            waitingForMace = true;
+            waitingForMace = false;
+            return;
         }
-    }
 
-    @EventHandler
-    private void onTick(TickEvent.Post event) {
-        if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
-
-        long currentTime = System.currentTimeMillis();
-
-        // Handle the delayed mace hit
+        // Handle mace hit if waiting with delay
         if (waitingForMace && currentTarget != null) {
             long elapsedTime = currentTime - axeHitTime;
             long requiredDelay = getRequiredDelay();
 
             if (elapsedTime >= requiredDelay) {
-                PlayerEntity player = mc.player;
                 // Mace hit
                 InvUtils.swap(maceSlot.get(), false);
                 mc.interactionManager.attackEntity(player, currentTarget);
@@ -223,6 +186,48 @@ public class StunMace extends Module {
                 waitingForMace = false;
                 currentTarget = null;
                 lastComboTime = currentTime;
+            }
+            return;
+        }
+
+        // Check combo cooldown
+        if (currentTime - lastComboTime < comboDelay.get()) {
+            return;
+        }
+
+        // Combo trigger logic
+        if (!comboActive && player.fallDistance >= fallDistance.get()) {
+            PlayerEntity target = getTarget();
+            if (target != null && (ignoreShield.get() || target.isBlocking())) {
+                comboActive = true;
+                currentTarget = target;
+
+                // Axe hit
+                InvUtils.swap(axeSlot.get(), false);
+                mc.interactionManager.attackEntity(player, target);
+                player.swingHand(Hand.MAIN_HAND);
+
+                // Set up delay for mace
+                DelayMode mode = delayMode.get();
+                if (mode == DelayMode.None) {
+                    // No delay - hit mace immediately in the same tick
+                    InvUtils.swap(maceSlot.get(), false);
+                    mc.interactionManager.attackEntity(player, target);
+                    player.swingHand(Hand.MAIN_HAND);
+
+                    // Return to chosen slot immediately if enabled
+                    if (enableReturnSlot.get()) {
+                        InvUtils.swap(returnSlot.get(), false);
+                    }
+
+                    comboActive = false;
+                    currentTarget = null;
+                    lastComboTime = currentTime;
+                } else {
+                    // Preset or Random delay - wait for next tick
+                    axeHitTime = currentTime;
+                    waitingForMace = true;
+                }
             }
         }
     }
@@ -247,14 +252,5 @@ public class StunMace extends Module {
             return player;
         }
         return null;
-    }
-
-    @Override
-    public void onDeactivate() {
-        comboActive = false;
-        currentTarget = null;
-        waitingForMace = false;
-        axeHitTime = 0;
-        lastComboTime = 0;
     }
 }

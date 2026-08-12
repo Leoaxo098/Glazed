@@ -11,16 +11,15 @@ import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.enchantment.Enchantments;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
 import net.minecraft.util.hit.HitResult;
 
 public class LungeSwapper extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
-    // ---- Instant Item Slot ----
-    private final Setting<Integer> instantSlot = sgGeneral.add(new IntSetting.Builder()
-        .name("instant-slot")
-        .description("The hotbar slot (1-9) containing the instant-cooldown item (wind charge / golden apple). Must be holding this for the swap to trigger.")
+    // ---- Trigger Slot ----
+    private final Setting<Integer> triggerSlot = sgGeneral.add(new IntSetting.Builder()
+        .name("trigger-slot")
+        .description("The hotbar slot (1-9) to hold when attacking. When you attack while this slot is selected, it will swap to the lunge spear.")
         .sliderRange(1, 9)
         .defaultValue(1)
         .min(1)
@@ -97,7 +96,7 @@ public class LungeSwapper extends Module {
     private int lastHeldSlot = -1;
 
     public LungeSwapper() {
-        super(GlazedAddon.pvp, "lunge-swapper", "When you attack while holding an instant item in the configured slot, swaps to a lunge-enchanted spear for the attribute swap exploit. Auto-returns to the instant slot.");
+        super(GlazedAddon.pvp, "lunge-swapper", "When you attack while the configured trigger slot is selected, swaps to a lunge-enchanted spear for the attribute swap exploit. Auto-returns to the trigger slot.");
     }
 
     // ---- Enums ----
@@ -185,26 +184,15 @@ public class LungeSwapper extends Module {
         lastHeldSlot = -1;
     }
 
-    // ---- Check if holding the configured instant item ----
+    // ---- Check if holding the configured trigger slot ----
     private boolean isHoldingValidInstantItem() {
         if (mc.player == null) return false;
 
         int heldSlot = mc.player.getInventory().getSelectedSlot();
-        int configSlot = instantSlot.get() - 1;
+        int configSlot = triggerSlot.get() - 1;
 
         // Must be holding the configured slot
-        if (heldSlot != configSlot) return false;
-
-        ItemStack held = mc.player.getMainHandStack();
-        return isInstantItem(held);
-    }
-
-    // ---- Helper: Identify instant-cooldown items ----
-    private boolean isInstantItem(ItemStack stack) {
-        if (stack.isEmpty()) return false;
-        return stack.isOf(Items.WIND_CHARGE)
-            || stack.isOf(Items.GOLDEN_APPLE)
-            || stack.isOf(Items.ENCHANTED_GOLDEN_APPLE);
+        return heldSlot == configSlot;
     }
 
     // ---- Helper: Find lunge-enchanted spear slot ----
